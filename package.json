@@ -1,0 +1,8 @@
+{
+  "name": "basket-radar",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Radar de básquet multiliga con datos de AnnaBet.com",
+  "engines": { "node": ">=18" }
+}
