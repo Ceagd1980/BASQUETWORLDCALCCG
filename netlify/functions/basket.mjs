@@ -20,6 +20,8 @@ const FALLBACK_LEAGUES = [
   ["serie_165_LNBP", "México LNBP"], ["serie_167_Brazilian_NBB", "Brasil NBB"],
 ];
 const MENU_PAGE = "serie_1_NBA"; // página de la que se lee el menú completo de ligas
+// Portadas con "Próximos partidos" de todas las ligas (se usa la primera que responda)
+const UPCOMING_PAGES = ["https://annabet.com/es/basketballstats/", "https://annabet.com/en/basketballstats/"];
 // =============================================================
 
 const HEADERS = {
@@ -115,6 +117,10 @@ const H = {
 function isStandingsHdr(r) {
   return r.some((c) => H.team.test(c)) && r.some((c) => H.w.test(c)) && r.some((c) => H.l.test(c));
 }
+// Tabla de posiciones válida = además trae puntos a favor y en contra (descarta tablas de apuestas)
+function isFullStandingsHdr(r) {
+  return isStandingsHdr(r) && r.some((c) => H.pf.test(c)) && r.some((c) => H.pa.test(c));
+}
 
 function parseStandingsTable(t) {
   const hi = t.rows.findIndex(isStandingsHdr);
@@ -133,8 +139,9 @@ function parseStandingsTable(t) {
     map[tkey(r[iT])] = {
       team: r[iT], pos: pl && pl > 0 && pl < 500 ? pl : pos,
       gp: GP, w: W, l: L,
-      pf: iPF >= 0 ? num(r[iPF]) : null,
-      pa: iPA >= 0 ? num(r[iPA]) : null,
+      // sin partidos jugados, los promedios "0.0" no son datos reales
+      pf: iPF >= 0 && GP > 0 ? num(r[iPF]) : null,
+      pa: iPA >= 0 && GP > 0 ? num(r[iPA]) : null,
     };
   }
   return map;
@@ -143,29 +150,21 @@ function parseStandingsTable(t) {
 // Toma las tablas de posiciones en orden. Lo normal: 1ª = todos los juegos, 2ª = casa, 3ª = fuera.
 // Si el texto previo a la tabla dice "home/casa" o "away/fuera", se usa eso.
 function parseStandings(html, tables) {
-  const st = tables.filter((t) => t.rows.some(isStandingsHdr));
+  let st = tables.filter((t) => t.rows.some(isFullStandingsHdr));
+  if (!st.length) st = tables.filter((t) => t.rows.some(isStandingsHdr));
   if (!st.length) throw new Error("tabla de posiciones no encontrada");
+  // Solo cuentan las 3 primeras (la de "Forma"/últimos partidos viene después y se ignora)
   const out = { all: null, home: null, away: null, groups: 0 };
-  const label = (t) => {
-    const before = decode(html.slice(Math.max(0, t.index - 400), t.index)).toLowerCase();
-    const last = before.slice(-120);
-    if (/\b(at home|home|casa|local)\b/.test(last)) return "home";
-    if (/\b(at away|away|fuera|visit)/.test(last)) return "away";
-    return null;
-  };
-  const maps = st.map((t) => ({ t, lab: label(t), map: parseStandingsTable(t) })).filter((x) => Object.keys(x.map).length);
-  // Caso típico: grupos de 3 tablas (general, casa, fuera). Si hay más (conferencias/grupos), se juntan.
-  const merge = (dst, src) => Object.assign(dst, src);
+  // Por ORDEN: 1ª tabla = todos los juegos, 2ª = en casa, 3ª = fuera.
+  // (Las pestañas "All games / At home / At away" se escriben todas antes de la 1ª tabla,
+  //  así que el texto previo no sirve para saber cuál es cuál.)
+  const maps = st.map((t) => parseStandingsTable(t)).filter((m) => Object.keys(m).length);
   const order = ["all", "home", "away"];
-  const hasLabels = maps.some((x) => x.lab);
-  if (hasLabels) {
-    for (const x of maps) out[x.lab || "all"] = merge(out[x.lab || "all"] || {}, x.map);
-  } else if (maps.length % 3 === 0) {
-    maps.forEach((x, i) => { const k = order[i % 3]; out[k] = merge(out[k] || {}, x.map); });
-    out.groups = maps.length / 3;
-  } else {
-    // Sin casa/fuera identificables: todo como general
-    for (const x of maps) out.all = merge(out.all || {}, x.map);
+  maps.slice(0, 3).forEach((m, i) => { out[order[i]] = m; });
+  // Coherencia: en casa + fuera no puede tener más partidos que la general; si pasa, se descartan
+  if (out.all && out.home && out.away) {
+    const bad = Object.keys(out.all).filter((k) => out.home[k] && out.away[k] && out.home[k].gp + out.away[k].gp > out.all[k].gp + 0.5).length;
+    if (bad > Object.keys(out.all).length / 2) { out.home = null; out.away = null; out.mismatch = true; }
   }
   if (!out.all) out.all = {};
   return out;
@@ -209,6 +208,7 @@ function parseGames(tables, knownKeys, nameOf) {
     return null;
   };
   for (const t of tables) {
+    curDate = null; // la fecha de un encabezado vale solo dentro de su tabla
     for (const r of t.rows) {
       const rowText = r.join(" | ");
       const d = findDate(rowText);
@@ -235,6 +235,8 @@ function parseGames(tables, knownKeys, nameOf) {
       }
       const time = /\b([01]?\d|2[0-3]):([0-5]\d)\b/.exec(rowText);
       const odds = r.map((c) => c.trim()).filter((c) => /^\d{1,2}\.\d{2}$/.test(c)).map(Number);
+      // Hándicap de la casa de apuestas (columna HC: "0", "+19.5", "-29.5")
+      const hcCell = odds.length >= 2 ? r.map((c) => c.trim()).find((c) => /^([+-]\d{1,2}(\.5)?|0)$/.test(c)) : null;
       const id = `${date}|${hk}|${ak}`;
       if (seen.has(id)) continue;
       seen.add(id);
@@ -243,6 +245,7 @@ function parseGames(tables, knownKeys, nameOf) {
         home: nameOf(hk), away: nameOf(ak), homeKey: hk, awayKey: ak,
         score: score ? [+score[1], +score[2]] : null,
         odds: odds.length >= 2 ? odds.slice(0, 3) : null,
+        hc: hcCell ? Number(hcCell) : null,
       });
     }
   }
@@ -285,6 +288,20 @@ async function leaguesResponse() {
   }
 }
 
+async function debugUpcoming() {
+  const out = [];
+  for (const u of UPCOMING_PAGES) {
+    try {
+      const r = await fetch(u, { headers: HEADERS });
+      const html = await r.text();
+      const tables = parseTables(html);
+      out.push({ url: u, status: r.status, final: r.url, bytes: html.length, tablas: tables.length,
+        muestra: tables.slice(0, 6).map((t, i) => ({ n: i, filas: t.rows.length, primeras: t.rows.slice(0, 5) })) });
+    } catch (e) { out.push({ url: u, error: e.message }); }
+  }
+  return out;
+}
+
 async function debugResponse(league) {
   const u = `${SITE}${league}.html`;
   try {
@@ -300,6 +317,7 @@ async function debugResponse(league) {
       })),
       fechasEncontradas: [...new Set((decode(html).match(/\b\d{1,2}\.\s+[A-Z][a-z]+\s+\d{4}\b/g) || []))].slice(0, 10),
       ligasEnMenu: parseLeagues(html).length,
+      portadaProximos: await debugUpcoming(),
     }, 200, { "Cache-Control": "no-store" });
   } catch (e) {
     return json({ url: u, error: e.message }, 200, { "Cache-Control": "no-store" });
@@ -312,12 +330,20 @@ export default async (req) => {
   const league = cleanLeague(url.searchParams.get("league")) || "serie_20_Euroleague";
   if (url.searchParams.get("debug")) return debugResponse(league);
 
-  let html;
-  try {
-    html = await getHtml(`${SITE}${league}.html`);
-  } catch (e) {
-    return json({ ok: false, error: `No se pudo leer la liga en AnnaBet (${e.message}).`, league }, 502, { "Cache-Control": "no-store" });
-  }
+  // La página de la liga y la portada de próximos partidos se piden a la vez
+  const [leagueRes, upRes] = await Promise.allSettled([
+    getHtml(`${SITE}${league}.html`),
+    (async () => {
+      let err;
+      for (const u of UPCOMING_PAGES) { try { return await getHtml(u, 1, 6000); } catch (e) { err = e; } }
+      throw err || new Error("sin respuesta");
+    })(),
+  ]);
+  if (leagueRes.status !== "fulfilled")
+    return json({ ok: false, error: `No se pudo leer la liga en AnnaBet (${leagueRes.reason?.message}).`, league }, 502, { "Cache-Control": "no-store" });
+  const html = leagueRes.value;
+  const upcomingHtml = upRes.status === "fulfilled" ? upRes.value : null;
+  const upcomingFail = upRes.status === "fulfilled" ? null : upRes.reason?.message;
 
   const warnings = [];
   const tables = parseTables(html);
@@ -327,15 +353,34 @@ export default async (req) => {
   } catch (e) {
     return json({ ok: false, error: `La liga no tiene tabla de posiciones en AnnaBet (${e.message}).`, league }, 502, { "Cache-Control": "no-store" });
   }
-  if (!standings.home || !standings.away) warnings.push("Esta liga no trae tablas de casa y fuera: se usa la general para todo.");
+  if (standings.mismatch) warnings.push("Las tablas de casa/fuera no cuadran con la general: se usa la general para todo.");
+  else if (!standings.home || !standings.away) warnings.push("Esta liga no trae tablas de casa y fuera: se usa la general para todo.");
 
   const names = {};
   for (const m of [standings.all, standings.home, standings.away]) for (const [k, v] of Object.entries(m || {})) names[k] ||= v.team;
   const known = new Set(Object.keys(names));
-  const games = parseGames(tables, known, (k) => names[k]);
-  if (!games.length) warnings.push("No se encontraron partidos en la página de esta liga.");
+  const nameOf = (k) => names[k];
+
+  // a) partidos de la página de la liga (resultados y, si los trae, próximos)
+  const games = parseGames(tables, known, nameOf);
+  // b) próximos partidos de la portada: se quedan los que tienen a DOS equipos de esta liga
+  let upcomingErr = null, upcomingCount = 0;
+  if (upcomingHtml) {
+    const up = parseGames(parseTables(upcomingHtml), known, nameOf);
+    const idx = new Map(games.map((g, i) => [`${g.date}|${g.homeKey}|${g.awayKey}`, i]));
+    for (const g of up) {
+      const id = `${g.date}|${g.homeKey}|${g.awayKey}`;
+      if (idx.has(id)) {
+        const old = games[idx.get(id)];
+        old.odds ||= g.odds; if (old.hc == null) old.hc = g.hc; old.time ||= g.time;
+      } else { games.push(g); upcomingCount++; }
+    }
+  } else upcomingErr = upcomingFail;
+  if (upcomingErr) warnings.push(`Próximos partidos (portada de AnnaBet): ${upcomingErr}`);
+  if (!games.length) warnings.push("No se encontraron partidos de esta liga (ni resultados ni próximos).");
   const noDate = games.filter((g) => !g.date).length;
-  if (noDate) warnings.push(`${noDate} partido(s) sin fecha reconocida.`);
+  if (noDate) warnings.push(`${noDate} partido(s) sin fecha reconocida (no se muestran).`);
+  for (let i = games.length - 1; i >= 0; i--) if (!games[i].date) games.splice(i, 1);
 
   const title = decode((/<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html) || [])[1] || "") || league.replace(/^serie_\d+_/, "").replace(/_/g, " ");
 
