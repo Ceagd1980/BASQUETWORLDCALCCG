@@ -144,8 +144,9 @@ let DATA = null, FROM_CACHE = false, reqId = 0;
 
 // ---------- cálculos ----------
 const winp = (s) => (s && s.gp ? s.w / s.gp : null);
+// 1X2 solo si ambos equipos ya jugaron en esa condición
 function x12(L, V) {
-  if (!L || !V || !(L.gp + V.gp)) return null;
+  if (!L || !V || !L.gp || !V.gp) return null;
   const n = L.gp + V.gp;
   return { h: (L.w + V.l) / n, a: (V.w + L.l) / n };
 }
@@ -263,7 +264,8 @@ function render() {
       const Lg = S.all?.[g.homeKey], Ls = (S.home || S.all)?.[g.homeKey];
       const Vg = S.all?.[g.awayKey], Vs = (S.away || S.all)?.[g.awayKey];
       const fin = g.score ? `<span class="final">Final ${g.score[0]}–${g.score[1]}</span>` : "";
-      const odds = g.odds ? `<span class="odds">Cuotas ${g.odds.join(" · ")}</span>` : "";
+      const hc = g.hc != null ? ` · HC ${g.hc > 0 ? "+" : ""}${g.hc}` : "";
+      const odds = g.odds ? `<span class="odds" title="Cuotas 1 / 2 y hándicap (HC) de AnnaBet">Cuotas ${g.odds.join(" · ")}${hc}</span>` : "";
       return `<article class="game">
         <div class="meta"><span>${esc(g.time || "Hora por confirmar")} ${fin}</span>${odds}</div>
         <div class="teams">${teamRow(g.home, "home", Lg)}${teamRow(g.away, "away", Vg)}</div>
