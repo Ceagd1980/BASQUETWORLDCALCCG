@@ -291,7 +291,9 @@ async function load(keepDate) {
   const my = ++reqId;
   const btn = $("#load");
   btn.disabled = true; btn.textContent = "Cargando…";
-  $("#status").className = ""; $("#status").textContent = "Leyendo AnnaBet…";
+  const lname = $("#league").selectedOptions[0]?.textContent || league;
+  $("#status").className = ""; $("#status").textContent = `Cargando ${lname} desde AnnaBet…`;
+  if (!keepDate) { $("#games").innerHTML = `<div class="empty">Cargando ${esc(lname)}…</div>`; $("#warnbox").hidden = true; }
   const cacheKey = "basket-radar:" + league;
   try {
     const ctrl = new AbortController();
