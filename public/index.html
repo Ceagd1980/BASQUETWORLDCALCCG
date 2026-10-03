@@ -302,8 +302,7 @@ let NIGHT_SET = false;
 // Ligas de América: la casilla 🌙 se marca sola (salvo que la hayas cambiado tú)
 const AMERICAS = /brazil|brasil|colombia|argentin|mexic|major league soccer|\bmls\b|\busl\b|chile|peru|ecuador|urugua|paragua|bolivia|venezuel|canad|costa rica|hondur|guatemal|salvador|panam|nicaragu|jamaica|liga mx|libertadores|sudamericana|concacaf|\bnba\b|wnba|ncaa|lnbp|\bnbb\b|g league|\busa\b|puerto rico|\bbsn\b/i;
 function autoNight() {
-  const saved = LS.get("basket-radar:night");
-  if (saved != null) { $("#night").checked = saved === "1" && AMERICAS.test(`${DATA?.title} ${DATA?.league}`); return; }
+  if (NIGHT_SET) return;
   $("#night").checked = AMERICAS.test(`${DATA?.title} ${DATA?.league}`);
 } // la fecha se elige sola hasta que el usuario la cambie
 const tkc = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -317,7 +316,15 @@ function teamIndex() {
     if (names[k]) return k;
     if (exactOnly) return null;
     if (k.length < 5) return null;
-    const hits = keys.filter((x) => x.length >= 5 && (x.includes(k) || k.includes(x)));
+    let hits = keys.filter((x) => x.length >= 5 && (x.includes(k) || k.includes(x)));
+    if (!hits.length) {
+      // por palabras: "Club Atlético Platense" ↔ "Platense", "Gimnasia y Esgrima" ↔ "Gimnasia (CR)"
+      const STOP = /^(club|atletico|athletic|deportivo|deportes|asociacion|sociedad|sporting|basket|basquet|basketball|esporte|clube|union|city|united|real|the|and|del|los|las)$/;
+      const words = String(name).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 5 && !STOP.test(w));
+      const set = new Set();
+      for (const w of words) { const h = keys.filter((x) => x.includes(w)); if (h.length === 1) set.add(h[0]); }
+      hits = [...set];
+    }
     if (hits.length !== 1) return null;
     // "Oberhausen W", "Dortmund U19", "Bonner SC II" son otros equipos (femenino, juvenil, filial)
     const extra = (k.length > hits[0].length ? k.replace(hits[0], "") : hits[0].replace(k, ""));
@@ -335,6 +342,7 @@ async function loadUpcoming(my) {
   const { keyOf, nameOf } = teamIndex();
   const idx = new Map(DATA.games.map((g) => [`${g.date}|${g.homeKey}|${g.awayKey}`, g]));
   let added = 0, read = 0;
+  const extraNames = {}, missing = new Set();
   const shiftDay = (d, n) => { const [y, m, dd] = d.split("-").map(Number); return isoOf(new Date(y, m - 1, dd + n)); };
   for (const r of res) {
     if (r.status !== "fulfilled" || !r.value || !r.value.ok) continue;
@@ -342,7 +350,13 @@ async function loadUpcoming(my) {
     // la página del día trae todas las ligas: ahí solo nombres exactos (sin parecidos)
     const strict = /results_/.test(r.value.path || "");
     for (const row of r.value.rows || []) {
-      const hk = keyOf(row.a, strict), ak = keyOf(row.b, strict);
+      let hk = keyOf(row.a, strict), ak = keyOf(row.b, strict);
+      // pestaña de próximos de la propia liga: si un equipo no está en la tabla (ascendido, nombre distinto)
+      // el partido se muestra igual, con "—" en sus datos
+      if (!strict && row.a && row.b && row.date) {
+        if (!hk) { hk = "x:" + tkc(row.a); extraNames[hk] = row.a; missing.add(row.a); }
+        if (!ak) { ak = "x:" + tkc(row.b); extraNames[ak] = row.b; missing.add(row.b); }
+      }
       if (!hk || !ak || hk === ak || !row.date) continue;
       const id = `${row.date}|${hk}|${ak}`;
       // el mismo partido puede venir con un día de diferencia (hora UTC): se une, no se duplica
@@ -352,7 +366,7 @@ async function loadUpcoming(my) {
         g.time ||= row.time; g.odds ||= row.odds;
         continue;
       }
-      const ng = { date: row.date, time: row.time || "", home: nameOf(hk), away: nameOf(ak), homeKey: hk, awayKey: ak,
+      const ng = { date: row.date, time: row.time || "", home: extraNames[hk] || nameOf(hk), away: extraNames[ak] || nameOf(ak), homeKey: hk, awayKey: ak,
         score: row.score || null, odds: row.odds || null, hc: null, ...(row.ot ? { ot: row.ot } : {}) };
       DATA.games.push(ng); idx.set(id, ng); added++;
     }
@@ -369,6 +383,7 @@ async function loadUpcoming(my) {
         ? `${urls[i].replace(/^.*\//, "").slice(0, 30)} trae otros equipos: ${r.value.rows.slice(0, 3).map((x) => `${x.date} ${x.a} - ${x.b}`).join(" / ")}` : null).filter(Boolean).join(" ‖ ");
     (DATA.warnings ||= []).push(`Próximos partidos: AnnaBet no mostró partidos por jugar de esta liga. Fuentes: ${info}.${hints ? " Pistas: " + hints : ""}${samples ? " Muestra: " + samples : ""}`);
   }
+  if (missing.size) (DATA.warnings ||= []).push(`Sin datos de tabla (se muestran con "—"): ${[...missing].join(", ")}. Puede ser un equipo ascendido o con otro nombre en la tabla de AnnaBet.`);
   if (added && AUTO_DATE) $("#date").value = pickDefaultDate();
   render();
 }
@@ -438,11 +453,11 @@ async function loadLeagues() {
   sel.value = saved;
 }
 
-$("#league").addEventListener("change", () => { LS.set("basket-radar:league", $("#league").value); $("#q").value = ""; load(false); });
+$("#league").addEventListener("change", () => { LS.set("basket-radar:league", $("#league").value); $("#q").value = ""; NIGHT_SET = false; load(false); });
 // Si la liga elegida no es la que está cargada, se carga la nueva desde cero
 $("#load").addEventListener("click", () => load(!(DATA && DATA.league !== $("#league").value)));
 // Algunos navegadores no avisan "change" al elegir escribiendo: se revisa también al soltar la lista
-$("#league").addEventListener("blur", () => { const v = $("#league").value; if (v !== "__custom" && DATA && DATA.league !== v && !$("#load").disabled) { LS.set(LSKEY, v); $("#q").value = ""; load(false); } });
+$("#league").addEventListener("blur", () => { const v = $("#league").value; if (v !== "__custom" && DATA && DATA.league !== v && !$("#load").disabled) { LS.set(LSKEY, v); $("#q").value = ""; NIGHT_SET = false; load(false); } });
 $("#date").addEventListener("change", () => { AUTO_DATE = false; DATA && render(); });
 $("#night").addEventListener("change", () => { NIGHT_SET = true; LS.set("basket-radar:night", $("#night").checked ? "1" : "0"); DATA && render(); });
 $("#prev").addEventListener("click", () => { AUTO_DATE = false; shift(-1); });
