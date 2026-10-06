@@ -437,7 +437,7 @@ async function leaguesResponse() {
     return json({ ok: true, leagues: list, source: "annabet" }, 200, {
       "Cache-Control": "public, max-age=0, must-revalidate",
       "Netlify-CDN-Cache-Control": "public, durable, s-maxage=86400",
-      "Netlify-Vary": "query=part",
+      "Netlify-Vary": "query=league|part|path|debug",
     });
   } catch (e) {
     return json({ ok: true, leagues: FALLBACK_LEAGUES, source: "respaldo", warning: e.message }, 200, { "Cache-Control": "no-store" });
@@ -680,7 +680,7 @@ export default async (req) => {
     {
       "Cache-Control": "public, max-age=0, must-revalidate",
       "Netlify-CDN-Cache-Control": "public, durable, s-maxage=900, stale-while-revalidate=3600",
-      "Netlify-Vary": "query=league",
+      "Netlify-Vary": "query=league|part|path|debug",
     }
   );
 };
